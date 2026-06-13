@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</head>
+<body>
+<script>
+  let player = null;
+  let deviceId = null;
+  let accessToken = null;
+  let sdkReady = false;
+  let pendingInitToken = null;
+
+  function post(type, payload) {
+    if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.spotlite) {
+      console.error('Spotlite bridge missing');
+      return;
+    }
+    window.webkit.messageHandlers.spotlite.postMessage(Object.assign({ type: type }, payload || {}));
+  }
+
+  window.onSpotifyWebPlaybackSDKReady = function () {
+    sdkReady = true;
+    post('log', { message: 'Spotify Web Playback SDK ready' });
+    post('sdk_ready');
+    if (pendingInitToken) {
+      initPlayer(pendingInitToken);
+    }
+  };
+
+  function initPlayer(token) {
+    if (!token) return;
+    accessToken = token;
+    pendingInitToken = token;
+
+    if (typeof Spotify === 'undefined' || !Spotify.Player) {
+      post('log', { message: 'Waiting for Spotify SDK before initPlayer' });
+      return;
+    }
+
+    pendingInitToken = null;
+    post('log', { message: 'Creating Spotify.Player' });
+
+    if (player) {
+      player.disconnect();
+      player = null;
+      deviceId = null;
+    }
+
+    player = new Spotify.Player({
+      name: 'Spotlite',
+      getOAuthToken: function (cb) {
+        post('get_token');
+        window.__spotliteTokenCallback = cb;
+      },
+      volume: 0.8
+    });
+
+    player.addListener('ready', function ({ device_id }) {
+      deviceId = device_id;
+      post('log', { message: 'Player ready: ' + device_id });
+      post('ready', { deviceId: device_id });
+    });
+
+    player.addListener('not_ready', function ({ device_id }) {
+      post('log', { message: 'Player not ready: ' + device_id });
+      post('not_ready', { deviceId: device_id });
+    });
+
+    player.addListener('player_state_changed', function (state) {
+      post('state', { state: state || null });
+    });
+
+    player.addListener('initialization_error', function ({ message }) {
+      post('error', { message: 'initialization_error: ' + message });
+    });
+
+    player.addListener('authentication_error', function ({ message }) {
+      post('error', { message: 'authentication_error: ' + message });
+    });
+
+    player.addListener('account_error', function ({ message }) {
+      post('error', { message: 'account_error: ' + message });
+    });
+
+    player.addListener('playback_error', function ({ message }) {
+      post('error', { message: 'playback_error: ' + message });
+    });
+
+    player.connect().then(function (success) {
+      post('log', { message: 'player.connect() => ' + success });
+    });
+  }
+
+  function deliverToken(token) {
+    accessToken = token;
+    if (window.__spotliteTokenCallback) {
+      window.__spotliteTokenCallback(token);
+      window.__spotliteTokenCallback = null;
+    }
+  }
+
+  function setToken(token) {
+    accessToken = token;
+  }
+
+  function togglePlay() { if (player) player.togglePlay(); }
+  function resume() { if (player) player.resume(); }
+  function pause() { if (player) player.pause(); }
+  function nextTrack() { if (player) player.nextTrack(); }
+  function previousTrack() { if (player) player.previousTrack(); }
+  function seek(ms) { if (player) player.seek(ms); }
+  function setVolume(value) { if (player) player.setVolume(value); }
+</script>
+</body>
+</html>
