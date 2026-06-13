@@ -141,11 +141,10 @@ struct SpotifyAPIClient {
     }
 
     func seek(deviceID: String, positionMs: Int) async throws {
-        struct Body: Encodable {
-            let positionMs: Int
-            enum CodingKeys: String, CodingKey { case positionMs = "position_ms" }
-        }
-        _ = try await put("me/player/seek", query: ["device_id": deviceID], body: Body(positionMs: positionMs))
+        _ = try await put("me/player/seek", query: [
+            "device_id": deviceID,
+            "position_ms": "\(max(positionMs, 0))",
+        ])
     }
 
     func transferPlayback(deviceID: String) async throws {

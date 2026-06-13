@@ -61,7 +61,12 @@ struct PlaylistDetailView: View {
             .padding(24)
         }
         .navigationTitle(playlist.name)
-        .task { await loadTracks() }
+        .task(id: playlist.id) {
+            tracks = []
+            loadError = nil
+            isLoading = true
+            await loadTracks()
+        }
     }
 
     private var header: some View {
@@ -165,7 +170,11 @@ struct AlbumDetailView: View {
             .padding(24)
         }
         .navigationTitle(album.name)
-        .task { await loadTracks() }
+        .task(id: album.id) {
+            tracks = []
+            isLoading = true
+            await loadTracks()
+        }
     }
 
     private func loadTracks() async {
@@ -249,7 +258,12 @@ struct ArtistDetailView: View {
             .padding(24)
         }
         .navigationTitle(artist.name)
-        .task { await load() }
+        .task(id: artist.id) {
+            topTracks = []
+            albums = []
+            isLoading = true
+            await load()
+        }
     }
 
     @ViewBuilder

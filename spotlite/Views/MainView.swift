@@ -62,6 +62,18 @@ struct MainView: View {
                 PlaylistsView()
             }
         }
+        .navigationDestination(for: SpotifyPlaylist.self) { playlist in
+            PlaylistDetailView(playlist: playlist)
+                .id(playlist.id)
+        }
+        .navigationDestination(for: SpotifyAlbum.self) { album in
+            AlbumDetailView(album: album)
+                .id(album.id)
+        }
+        .navigationDestination(for: SpotifyArtist.self) { artist in
+            ArtistDetailView(artist: artist)
+                .id(artist.id)
+        }
     }
 }
 
@@ -95,12 +107,15 @@ struct SidebarView: View {
         .navigationTitle("Spotlite")
         .navigationDestination(for: SpotifyPlaylist.self) { playlist in
             PlaylistDetailView(playlist: playlist)
+                .id(playlist.id)
         }
         .navigationDestination(for: SpotifyAlbum.self) { album in
             AlbumDetailView(album: album)
+                .id(album.id)
         }
         .navigationDestination(for: SpotifyArtist.self) { artist in
             ArtistDetailView(artist: artist)
+                .id(artist.id)
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
