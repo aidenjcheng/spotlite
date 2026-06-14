@@ -4,6 +4,7 @@ import MediaPlayer
 @MainActor
 enum MediaControlsSetup {
     static func configure(model: AppModel) {
+        PlaybackKeyboardMonitor.install(model: model)
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.isEnabled = true
         center.pauseCommand.isEnabled = true

@@ -4,7 +4,7 @@ struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
     @State private var isScrubbing = false
     @State private var scrubPosition = 0.0
-    @State private var anchorPositionMs = 0
+    @State private var anchorPositionMs = 0.0
     @State private var anchorDate = Date()
 
     private var durationMs: Int {
@@ -15,16 +15,25 @@ struct NowPlayingBar: View {
         model.playback.isPlaying && !isScrubbing
     }
 
+    private func anchoredPositionMs(at date: Date, playing: Bool) -> Double {
+        guard playing else { return min(anchorPositionMs, Double(durationMs)) }
+        let elapsedMs = date.timeIntervalSince(anchorDate) * 1000
+        return min(anchorPositionMs + elapsedMs, Double(durationMs))
+    }
+
     private func displayPositionMs(at date: Date) -> Double {
         if isScrubbing { return scrubPosition }
-        guard model.playback.isPlaying else { return Double(model.playback.positionMs) }
-        let elapsedMs = date.timeIntervalSince(anchorDate) * 1000
-        return min(Double(anchorPositionMs) + elapsedMs, Double(durationMs))
+        return anchoredPositionMs(at: date, playing: model.playback.isPlaying)
     }
 
     private func syncPlaybackAnchor(to positionMs: Int? = nil) {
-        anchorPositionMs = positionMs ?? model.playback.positionMs
+        anchorPositionMs = Double(positionMs ?? model.playback.positionMs)
         anchorDate = Date()
+    }
+
+    private func freezePlaybackAnchor(at date: Date = Date()) {
+        anchorPositionMs = anchoredPositionMs(at: date, playing: true)
+        anchorDate = date
     }
 
     var body: some View {
@@ -142,9 +151,13 @@ struct NowPlayingBar: View {
             guard !isScrubbing else { return }
             syncPlaybackAnchor()
         }
-        .onChange(of: model.playback.isPlaying) { _, _ in
+        .onChange(of: model.playback.isPlaying) { wasPlaying, isPlaying in
             guard !isScrubbing else { return }
-            syncPlaybackAnchor()
+            if wasPlaying && !isPlaying {
+                freezePlaybackAnchor()
+            } else {
+                anchorDate = Date()
+            }
         }
         .onChange(of: model.playback.currentTrack?.id) { _, _ in
             guard !isScrubbing else { return }
