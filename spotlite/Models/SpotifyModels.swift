@@ -34,20 +34,28 @@ struct SpotifyUserProfile: Decodable, Identifiable {
 
 // MARK: - Shared
 
-struct SpotifyImage: Decodable, Hashable {
+struct SpotifyImage: Codable, Hashable {
     let url: String
     let width: Int?
     let height: Int?
 }
 
-struct SpotifyArtist: Decodable, Identifiable, Hashable {
+struct SpotifyArtist: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let images: [SpotifyImage]?
     let uri: String?
+
+    static func == (lhs: SpotifyArtist, rhs: SpotifyArtist) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
-struct SpotifyAlbum: Decodable, Identifiable, Hashable {
+struct SpotifyAlbum: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let images: [SpotifyImage]?
@@ -63,9 +71,17 @@ struct SpotifyAlbum: Decodable, Identifiable, Hashable {
     var artistNames: String {
         artists?.map(\.name).joined(separator: ", ") ?? ""
     }
+
+    static func == (lhs: SpotifyAlbum, rhs: SpotifyAlbum) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
-struct SpotifyTrack: Decodable, Identifiable, Hashable {
+struct SpotifyTrack: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let uri: String
@@ -98,6 +114,28 @@ struct SpotifyTrack: Decodable, Identifiable, Hashable {
         self.isLocal = isLocal
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        uri = try container.decodeIfPresent(String.self, forKey: .uri) ?? "spotify:track:\(id)"
+        durationMs = try container.decodeFlexibleInt(forKey: .durationMs)
+        artists = try container.decodeIfPresent([SpotifyArtist].self, forKey: .artists) ?? []
+        album = try container.decodeIfPresent(SpotifyAlbum.self, forKey: .album)
+        isLocal = try container.decodeIfPresent(Bool.self, forKey: .isLocal)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(uri, forKey: .uri)
+        try container.encode(durationMs, forKey: .durationMs)
+        try container.encode(artists, forKey: .artists)
+        try container.encodeIfPresent(album, forKey: .album)
+        try container.encodeIfPresent(isLocal, forKey: .isLocal)
+    }
+
     var artistNames: String {
         artists.map(\.name).joined(separator: ", ")
     }
@@ -106,21 +144,46 @@ struct SpotifyTrack: Decodable, Identifiable, Hashable {
         guard let url = album?.images?.first?.url else { return nil }
         return URL(string: url)
     }
-}
 
-struct SavedTrackItem: Decodable, Identifiable {
-    let addedAt: String
-    let track: SpotifyTrack
+    var hasArtwork: Bool { artworkURL != nil }
 
-    var id: String { track.id }
+    func mergingMetadata(from other: SpotifyTrack) -> SpotifyTrack {
+        SpotifyTrack(
+            id: id,
+            name: (!name.isEmpty && name != "Unknown") ? name : other.name,
+            uri: uri.isEmpty ? other.uri : uri,
+            durationMs: durationMs > 0 ? durationMs : other.durationMs,
+            artists: artists.isEmpty ? other.artists : artists,
+            album: Self.preferredAlbum(album, other.album),
+            isLocal: isLocal ?? other.isLocal
+        )
+    }
 
-    enum CodingKeys: String, CodingKey {
-        case addedAt = "added_at"
-        case track
+    private static func preferredAlbum(_ current: SpotifyAlbum?, _ other: SpotifyAlbum?) -> SpotifyAlbum? {
+        let currentHasImages = current?.images?.isEmpty == false
+        let otherHasImages = other?.images?.isEmpty == false
+        if currentHasImages { return current }
+        if otherHasImages { return other }
+        return current ?? other
     }
 }
 
-struct SpotifyPlaylist: Decodable, Identifiable, Hashable {
+struct SavedTrackItem: Codable, Identifiable {
+    let addedAt: String?
+    let track: SpotifyTrack?
+    let item: SpotifyTrack?
+
+    var resolvedTrack: SpotifyTrack? { item ?? track }
+
+    var id: String { resolvedTrack?.id ?? addedAt ?? UUID().uuidString }
+
+    enum CodingKeys: String, CodingKey {
+        case addedAt = "added_at"
+        case track, item
+    }
+}
+
+struct SpotifyPlaylist: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let description: String?
@@ -129,16 +192,63 @@ struct SpotifyPlaylist: Decodable, Identifiable, Hashable {
     let tracks: PlaylistTrackRef?
     let items: PlaylistTrackRef?
 
-    struct PlaylistTrackRef: Decodable, Hashable {
+    struct PlaylistTrackRef: Codable, Hashable {
         let total: Int
     }
 
     var trackCount: Int {
         (items ?? tracks)?.total ?? 0
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, images, uri, tracks, items
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        description = Self.decodeFlexibleString(from: container, forKey: .description)
+        images = try container.decodeIfPresent([SpotifyImage].self, forKey: .images)
+        uri = try container.decodeIfPresent(String.self, forKey: .uri) ?? "spotify:playlist:\(id)"
+        tracks = try container.decodeIfPresent(PlaylistTrackRef.self, forKey: .tracks)
+        items = try container.decodeIfPresent(PlaylistTrackRef.self, forKey: .items)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encodeIfPresent(images, forKey: .images)
+        try container.encode(uri, forKey: .uri)
+        if let items {
+            try container.encode(items, forKey: .items)
+        } else if let tracks {
+            try container.encode(tracks, forKey: .tracks)
+        }
+    }
+
+    static func == (lhs: SpotifyPlaylist, rhs: SpotifyPlaylist) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    private static func decodeFlexibleString(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> String? {
+        if let value = try? container.decode(String.self, forKey: key) {
+            return value
+        }
+        return nil
+    }
 }
 
-struct PlaylistTrackItem: Decodable, Identifiable {
+struct PlaylistTrackItem: Codable, Identifiable {
     let addedAt: String?
     let track: SpotifyTrack?
     let item: SpotifyTrack?
@@ -154,14 +264,23 @@ struct PlaylistTrackItem: Decodable, Identifiable {
     }
 }
 
-struct RecentlyPlayedItem: Decodable, Identifiable {
-    let track: SpotifyTrack
+struct RecentlyPlayedItem: Codable, Identifiable {
+    let track: SpotifyTrack?
+    let item: SpotifyTrack?
     let playedAt: String
 
-    var id: String { "\(track.id)-\(playedAt)" }
+    var resolvedTrack: SpotifyTrack? { item ?? track }
+
+    var id: String { "\(resolvedTrack?.id ?? playedAt)-\(playedAt)" }
+
+    init(track: SpotifyTrack, playedAt: String) {
+        self.track = track
+        self.item = nil
+        self.playedAt = playedAt
+    }
 
     enum CodingKeys: String, CodingKey {
-        case track
+        case track, item
         case playedAt = "played_at"
     }
 }
@@ -170,6 +289,18 @@ struct SpotifyPaging<T: Decodable>: Decodable {
     let items: [T]
     let total: Int?
     let next: String?
+
+    enum CodingKeys: String, CodingKey {
+        case items, total, next
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let wrapped = try container.decodeIfPresent([FailableDecodable<T>].self, forKey: .items) ?? []
+        items = wrapped.compactMap(\.value)
+        total = try container.decodeIfPresent(Int.self, forKey: .total)
+        next = try container.decodeIfPresent(String.self, forKey: .next)
+    }
 }
 
 struct SpotifySearchResults: Decodable {
@@ -193,11 +324,22 @@ struct PlayerPlaybackState: Decodable {
     let isPlaying: Bool
     let progressMs: Int?
     let item: SpotifyTrack?
+    let track: SpotifyTrack?
+
+    var resolvedTrack: SpotifyTrack? { item ?? track }
 
     enum CodingKeys: String, CodingKey {
         case isPlaying = "is_playing"
         case progressMs = "progress_ms"
-        case item
+        case item, track
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isPlaying = try container.decode(Bool.self, forKey: .isPlaying)
+        progressMs = try container.decodeFlexibleIntIfPresent(forKey: .progressMs)
+        item = try container.decodeIfPresent(SpotifyTrack.self, forKey: .item)
+        track = try container.decodeIfPresent(SpotifyTrack.self, forKey: .track)
     }
 }
 
@@ -208,12 +350,51 @@ struct WebPlaybackState: Decodable {
     let position: Int
     let duration: Int
     let trackWindow: TrackWindow?
-    let disallows: Disallows?
+
+    init(paused: Bool, position: Int, duration: Int, trackWindow: TrackWindow?) {
+        self.paused = paused
+        self.position = position
+        self.duration = duration
+        self.trackWindow = trackWindow
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        paused = try container.decode(Bool.self, forKey: .paused)
+        position = try container.decodeFlexibleInt(forKey: .position)
+        duration = try container.decodeFlexibleInt(forKey: .duration)
+        trackWindow = try container.decodeIfPresent(TrackWindow.self, forKey: .trackWindow)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case paused, position, duration
+        case trackWindow = "track_window"
+    }
+
+    var currentTrackIdentity: String? {
+        trackWindow?.currentTrack?.id ?? trackWindow?.currentTrack?.uri
+    }
+
+    /// Whether this state change should trigger SwiftUI / coordinator sync (skip position-only ticks while playing).
+    func shouldPublishRevision(comparedTo previous: WebPlaybackState?) -> Bool {
+        guard let previous else { return true }
+        if paused != previous.paused { return true }
+        if duration != previous.duration { return true }
+        if currentTrackIdentity != previous.currentTrackIdentity { return true }
+        if paused, abs(position - previous.position) > 250 { return true }
+        return false
+    }
 
     struct TrackWindow: Decodable {
         let currentTrack: PlaybackTrack?
         let nextTracks: [PlaybackTrack]?
         let previousTracks: [PlaybackTrack]?
+
+        init(currentTrack: PlaybackTrack?, nextTracks: [PlaybackTrack]?, previousTracks: [PlaybackTrack]?) {
+            self.currentTrack = currentTrack
+            self.nextTracks = nextTracks
+            self.previousTracks = previousTracks
+        }
 
         enum CodingKeys: String, CodingKey {
             case currentTrack = "current_track"
@@ -230,19 +411,25 @@ struct WebPlaybackState: Decodable {
         let album: SpotifyAlbum?
         let artists: [SpotifyArtist]?
 
+        init(
+            id: String?,
+            name: String?,
+            uri: String?,
+            durationMs: Int?,
+            album: SpotifyAlbum?,
+            artists: [SpotifyArtist]?
+        ) {
+            self.id = id
+            self.name = name
+            self.uri = uri
+            self.durationMs = durationMs
+            self.album = album
+            self.artists = artists
+        }
+
         enum CodingKeys: String, CodingKey {
             case id, name, uri, album, artists
             case durationMs = "duration_ms"
-        }
-    }
-
-    struct Disallows: Decodable {
-        let pausing: Bool?
-        let skippingPrev: Bool?
-
-        enum CodingKeys: String, CodingKey {
-            case pausing
-            case skippingPrev = "skipping_prev"
         }
     }
 }
@@ -259,16 +446,37 @@ enum SpotifyAPIError: LocalizedError {
         switch self {
         case .unauthorized:
             "Spotify session expired. Sign in again."
+        case .http(429, _):
+            "Spotify rate limit reached. Wait a moment and try again."
         case .http(let code, let body):
             "Spotify API error (\(code)): \(body)"
         case .decoding(let error):
-            "Failed to decode Spotify response: \(error.localizedDescription)"
+            if let decoding = error as? DecodingError {
+                "Failed to decode Spotify response: \(Self.describe(decoding))"
+            } else {
+                "Failed to decode Spotify response: \(error.localizedDescription)"
+            }
         case .missingClientID:
             "Add your Spotify Client ID in Settings."
         case .missingRefreshToken:
             "No refresh token. Sign in again."
         case .playbackNotReady:
             "Playback engine is still starting. Try again in a moment."
+        }
+    }
+
+    private static func describe(_ error: DecodingError) -> String {
+        switch error {
+        case .keyNotFound(let key, let context):
+            "Missing '\(key.stringValue)' at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
+        case .typeMismatch(let type, let context):
+            "Type mismatch for \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
+        case .valueNotFound(let type, let context):
+            "Missing value for \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
+        case .dataCorrupted(let context):
+            context.debugDescription
+        @unknown default:
+            error.localizedDescription
         }
     }
 }

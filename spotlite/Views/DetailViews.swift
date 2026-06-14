@@ -1,5 +1,44 @@
 import SwiftUI
 
+struct DetailHeaderView: View {
+    let title: String
+    var subtitle: String?
+    var detail: String?
+    let imageURL: URL?
+    var imageCornerRadius: CGFloat = 8
+    var imageSize: CGFloat = 120
+    var primaryActionTitle: String?
+    var primaryAction: (() -> Void)?
+    var primaryDisabled = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            ArtworkView(url: imageURL, size: imageSize, cornerRadius: imageCornerRadius)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.title.bold())
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .foregroundStyle(SpotliteTheme.textSecondary)
+                        .lineLimit(3)
+                }
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(SpotliteTheme.textSecondary)
+                }
+                if let primaryActionTitle, let primaryAction {
+                    Button(primaryActionTitle, action: primaryAction)
+                        .buttonStyle(.borderedProminent)
+                        .tint(SpotliteTheme.accent)
+                        .disabled(primaryDisabled)
+                }
+            }
+            Spacer()
+        }
+    }
+}
+
 struct PlaylistDetailView: View {
     @Environment(AppModel.self) private var model
     let playlist: SpotifyPlaylist
@@ -17,45 +56,38 @@ struct PlaylistDetailView: View {
         }
     }
 
+    private var trackCountLabel: String {
+        let count = playableTracks.isEmpty ? playlist.trackCount : playableTracks.count
+        return count == 1 ? "1 track" : "\(count) tracks"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                header
+                DetailHeaderView(
+                    title: playlist.name,
+                    subtitle: playlist.description,
+                    detail: trackCountLabel,
+                    imageURL: playlist.images?.first.flatMap { URL(string: $0.url) },
+                    primaryActionTitle: "Play",
+                    primaryAction: {
+                        Task { await model.playback.playContext(uri: playlist.uri) }
+                    },
+                    primaryDisabled: playableTracks.isEmpty && playlist.trackCount == 0
+                )
+
                 if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 120)
                 } else if playableTracks.isEmpty {
                     ContentUnavailableView(
                         "No tracks to show",
                         systemImage: "music.note.list",
-                        description: Text(loadError ?? "Spotify only returns playlist tracks for playlists you own or collaborate on.")
+                        description: Text(loadError ?? "Spotify only returns playlist tracks for playlists you own or collaborate on. You can still press Play to start the playlist.")
                     )
                     .frame(maxWidth: .infinity, minHeight: 200)
                 } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(playableTracks, id: \.index) { entry in
-                            TrackRowView(
-                                track: entry.track,
-                                isSaved: model.savedTrackIDs.contains(entry.track.id)
-                            ) {
-                                Task {
-                                    await model.playback.playContext(
-                                        uri: playlist.uri,
-                                        offset: entry.index,
-                                        nowPlaying: entry.track
-                                    )
-                                }
-                            } onQueue: {
-                                Task { await model.playback.addToQueue(entry.track) }
-                            } onToggleSave: { saved in
-                                let newValue = await model.playback.toggleSave(track: entry.track, isSaved: saved)
-                                model.updateSavedTrackID(entry.track.id, saved: newValue)
-                                return newValue
-                            }
-                            Divider().overlay(SpotliteTheme.divider)
-                        }
-                    }
-                    .background(SpotliteTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    trackList
                 }
             }
             .padding(24)
@@ -69,40 +101,59 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 16) {
-            ArtworkView(url: playlist.images?.first.flatMap { URL(string: $0.url) }, size: 120)
-            VStack(alignment: .leading, spacing: 8) {
-                Text(playlist.name)
-                    .font(.title.bold())
-                if let description = playlist.description, !description.isEmpty {
-                    Text(description)
-                        .foregroundStyle(SpotliteTheme.textSecondary)
-                        .lineLimit(3)
+    private var trackList: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(playableTracks, id: \.index) { entry in
+                TrackRowView(
+                    track: entry.track
+                ) {
+                    Task {
+                        await model.playback.playContext(
+                            uri: playlist.uri,
+                            offset: entry.index,
+                            nowPlaying: entry.track
+                        )
+                    }
+                } onQueue: {
+                    Task { await model.playback.addToQueue(entry.track) }
+                } onToggleSave: { saved in
+                    let newValue = await model.playback.toggleSave(track: entry.track, isSaved: saved)
+                    model.setTrackSaved(entry.track.id, saved: newValue)
+                    return newValue
                 }
-                Text("\(playableTracks.isEmpty ? playlist.trackCount : playableTracks.count) tracks")
-                    .font(.caption)
-                    .foregroundStyle(SpotliteTheme.textSecondary)
-                Button("Play") {
-                    Task { await model.playback.playContext(uri: playlist.uri) }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(SpotliteTheme.accent)
-                .disabled(playableTracks.isEmpty && playlist.trackCount == 0)
+                Divider().overlay(SpotliteTheme.divider)
             }
-            Spacer()
         }
+        .background(SpotliteTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func loadTracks() async {
         isLoading = true
         loadError = nil
         defer { isLoading = false }
+
+        if let cached = LibraryCache.loadPlaylistTracksAllowingStale(id: playlist.id), !cached.isEmpty {
+            tracks = cached
+            isLoading = false
+            Task { await fetchTracksFromNetwork() }
+            return
+        }
+
+        await fetchTracksFromNetwork()
+    }
+
+    private func fetchTracksFromNetwork() async {
         do {
-            tracks = try await api.fetchAllPlaylistTracks(id: playlist.id)
+            let fetched = try await api.fetchAllPlaylistTracks(id: playlist.id)
+            tracks = fetched
+            LibraryCache.savePlaylistTracks(id: playlist.id, tracks: fetched)
+            loadError = nil
         } catch {
-            loadError = error.localizedDescription
-            model.bannerError = error.localizedDescription
+            if tracks.isEmpty {
+                loadError = error.localizedDescription
+                model.bannerError = error.localizedDescription
+            }
         }
     }
 }
@@ -113,58 +164,48 @@ struct AlbumDetailView: View {
 
     @State private var tracks: [SpotifyTrack] = []
     @State private var isLoading = true
+    @State private var loadError: String?
 
     private var api: SpotifyAPIClient { SpotifyAPIClient(auth: model.auth) }
+
+    private var albumDetail: String? {
+        var parts: [String] = []
+        if let releaseDate = album.releaseDate, !releaseDate.isEmpty {
+            parts.append(releaseDate)
+        }
+        if !tracks.isEmpty {
+            parts.append(tracks.count == 1 ? "1 track" : "\(tracks.count) tracks")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 16) {
-                    ArtworkView(url: album.images?.first.flatMap { URL(string: $0.url) }, size: 120)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(album.name)
-                            .font(.title.bold())
-                        Text(album.artistNames)
-                            .foregroundStyle(SpotliteTheme.textSecondary)
-                        if let uri = album.uri {
-                            Button("Play album") {
-                                Task { await model.playback.playContext(uri: uri) }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(SpotliteTheme.accent)
-                        }
-                    }
-                    Spacer()
-                }
+                DetailHeaderView(
+                    title: album.name,
+                    subtitle: album.artistNames,
+                    detail: albumDetail,
+                    imageURL: album.images?.first.flatMap { URL(string: $0.url) },
+                    primaryActionTitle: album.uri == nil ? nil : "Play album",
+                    primaryAction: album.uri.map { uri in
+                        { Task { await model.playback.playContext(uri: uri) } }
+                    },
+                    primaryDisabled: tracks.isEmpty && !isLoading
+                )
 
                 if isLoading {
                     ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else if tracks.isEmpty {
+                    ContentUnavailableView(
+                        "No tracks found",
+                        systemImage: "music.note",
+                        description: Text(loadError ?? "This album has no playable tracks.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 200)
                 } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                            TrackRowView(
-                                track: track,
-                                isSaved: model.savedTrackIDs.contains(track.id)
-                            ) {
-                                if let uri = album.uri {
-                                    Task {
-                                        await model.playback.playContext(uri: uri, offset: index, nowPlaying: track)
-                                    }
-                                } else {
-                                    Task { await model.playback.playTrack(track) }
-                                }
-                            } onQueue: {
-                                Task { await model.playback.addToQueue(track) }
-                            } onToggleSave: { saved in
-                                let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
-                                model.updateSavedTrackID(track.id, saved: newValue)
-                                return newValue
-                            }
-                            Divider().overlay(SpotliteTheme.divider)
-                        }
-                    }
-                    .background(SpotliteTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    trackList
                 }
             }
             .padding(24)
@@ -172,18 +213,48 @@ struct AlbumDetailView: View {
         .navigationTitle(album.name)
         .task(id: album.id) {
             tracks = []
+            loadError = nil
             isLoading = true
             await loadTracks()
         }
     }
 
+    private var trackList: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                TrackRowView(
+                    track: track
+                ) {
+                    if let uri = album.uri {
+                        Task {
+                            await model.playback.playContext(uri: uri, offset: index, nowPlaying: track)
+                        }
+                    } else {
+                        Task { await model.playback.playTrack(track) }
+                    }
+                } onQueue: {
+                    Task { await model.playback.addToQueue(track) }
+                } onToggleSave: { saved in
+                    let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
+                    model.setTrackSaved(track.id, saved: newValue)
+                    return newValue
+                }
+                Divider().overlay(SpotliteTheme.divider)
+            }
+        }
+        .background(SpotliteTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private func loadTracks() async {
         isLoading = true
+        loadError = nil
         defer { isLoading = false }
         do {
             let page = try await api.fetchAlbumTracks(id: album.id, limit: 50)
             tracks = page.items
         } catch {
+            loadError = error.localizedDescription
             model.bannerError = error.localizedDescription
         }
     }
@@ -202,55 +273,70 @@ struct ArtistDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 16) {
-                    ArtworkView(
-                        url: artist.images?.first.flatMap { URL(string: $0.url) },
-                        size: 120,
-                        cornerRadius: 60
-                    )
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(artist.name)
-                            .font(.title.bold())
-                        Text("Artist")
-                            .foregroundStyle(SpotliteTheme.textSecondary)
-                    }
-                    Spacer()
-                }
+                DetailHeaderView(
+                    title: artist.name,
+                    subtitle: "Artist",
+                    imageURL: artist.images?.first.flatMap { URL(string: $0.url) },
+                    imageCornerRadius: 60
+                )
 
                 if isLoading {
                     ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else if topTracks.isEmpty && albums.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing to show yet",
+                        systemImage: "person.fill",
+                        description: Text("Popular tracks and albums couldn't be loaded for this artist.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 200)
                 } else {
-                    section(title: "Popular") {
-                        ForEach(topTracks) { track in
-                            TrackRowView(
-                                track: track,
-                                isSaved: model.savedTrackIDs.contains(track.id)
-                            ) {
-                                Task { await model.playback.playTrack(track) }
-                            } onQueue: {
-                                Task { await model.playback.addToQueue(track) }
-                            } onToggleSave: { saved in
-                                let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
-                                model.updateSavedTrackID(track.id, saved: newValue)
-                                return newValue
+                    if !topTracks.isEmpty {
+                        section(title: "Popular") {
+                            ForEach(topTracks) { track in
+                                TrackRowView(
+                                    track: track
+                                ) {
+                                    Task { await model.playback.playTrack(track) }
+                                } onQueue: {
+                                    Task { await model.playback.addToQueue(track) }
+                                } onToggleSave: { saved in
+                                    let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
+                                    model.setTrackSaved(track.id, saved: newValue)
+                                    return newValue
+                                }
+                                Divider().overlay(SpotliteTheme.divider)
                             }
-                            Divider().overlay(SpotliteTheme.divider)
                         }
                     }
 
-                    section(title: "Albums") {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], spacing: 16) {
-                            ForEach(albums) { album in
-                                NavigationLink(value: album) {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        ArtworkView(url: album.images?.first.flatMap { URL(string: $0.url) }, size: 140)
-                                        Text(album.name)
-                                            .font(.subheadline.weight(.semibold))
-                                            .lineLimit(2)
+                    if !albums.isEmpty {
+                        section(title: "Albums") {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], spacing: 16) {
+                                ForEach(albums) { album in
+                                    Button {
+                                        model.openAlbum(album)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            ArtworkView(
+                                                url: album.images?.first.flatMap { URL(string: $0.url) },
+                                                size: 140
+                                            )
+                                            Text(album.name)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(SpotliteTheme.textPrimary)
+                                                .lineLimit(2)
+                                            if let releaseDate = album.releaseDate, !releaseDate.isEmpty {
+                                                Text(releaseDate)
+                                                    .font(.caption)
+                                                    .foregroundStyle(SpotliteTheme.textSecondary)
+                                            }
+                                        }
                                     }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .padding(12)
                         }
                     }
                 }
@@ -282,7 +368,7 @@ struct ArtistDetailView: View {
         defer { isLoading = false }
         do {
             async let tracks = api.fetchArtistTopTracks(id: artist.id)
-            async let discography = api.fetchArtistAlbums(id: artist.id)
+            async let discography = api.fetchAllArtistAlbums(id: artist.id)
             topTracks = try await tracks
             albums = try await discography
         } catch {

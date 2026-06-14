@@ -17,19 +17,20 @@ struct HomeView: View {
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(model.recentlyPlayed) { item in
-                            TrackRowView(
-                                track: item.track,
-                                isSaved: model.savedTrackIDs.contains(item.track.id)
-                            ) {
-                                Task { await model.playback.playTrack(item.track) }
-                            } onQueue: {
-                                Task { await model.playback.addToQueue(item.track) }
-                            } onToggleSave: { saved in
-                                let newValue = await model.playback.toggleSave(track: item.track, isSaved: saved)
-                                model.updateSavedTrackID(item.track.id, saved: newValue)
-                                return newValue
+                            if let track = item.resolvedTrack {
+                                TrackRowView(
+                                    track: track
+                                ) {
+                                    Task { await model.playback.playTrack(track) }
+                                } onQueue: {
+                                    Task { await model.playback.addToQueue(track) }
+                                } onToggleSave: { saved in
+                                    let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
+                                    model.setTrackSaved(track.id, saved: newValue)
+                                    return newValue
+                                }
+                                Divider().overlay(SpotliteTheme.divider)
                             }
-                            Divider().overlay(SpotliteTheme.divider)
                         }
                     }
                     .background(SpotliteTheme.surface)
@@ -39,6 +40,7 @@ struct HomeView: View {
             .padding(24)
         }
         .navigationTitle("Home")
+        .task { await model.loadHome() }
         .refreshable { await model.loadHome() }
     }
 

@@ -61,6 +61,8 @@ struct SearchView: View {
                         playlistResults
                     }
                 }
+                .background(SpotliteTheme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
@@ -71,65 +73,111 @@ struct SearchView: View {
 
     @ViewBuilder
     private var trackResults: some View {
-        ForEach(model.searchResults.tracks?.items ?? []) { track in
-            TrackRowView(
-                track: track,
-                isSaved: model.savedTrackIDs.contains(track.id)
-            ) {
-                Task { await model.playback.playTrack(track) }
-            } onQueue: {
-                Task { await model.playback.addToQueue(track) }
-            } onToggleSave: { saved in
-                let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
-                model.updateSavedTrackID(track.id, saved: newValue)
-                return newValue
+        let tracks = model.searchResults.tracks?.items ?? []
+        if tracks.isEmpty {
+            searchEmptyState("No tracks found", icon: "music.note")
+        } else {
+            ForEach(tracks) { track in
+                TrackRowView(
+                    track: track
+                ) {
+                    Task { await model.playback.playTrack(track) }
+                } onQueue: {
+                    Task { await model.playback.addToQueue(track) }
+                } onToggleSave: { saved in
+                    let newValue = await model.playback.toggleSave(track: track, isSaved: saved)
+                    model.setTrackSaved(track.id, saved: newValue)
+                    return newValue
+                }
+                Divider().overlay(SpotliteTheme.divider)
             }
-            Divider().overlay(SpotliteTheme.divider)
         }
     }
 
     @ViewBuilder
     private var albumResults: some View {
-        ForEach(model.searchResults.albums?.items ?? []) { album in
-            NavigationLink(value: album) {
-                MediaRowView(
-                    title: album.name,
-                    subtitle: album.artistNames,
-                    imageURL: album.images?.first.flatMap { URL(string: $0.url) }
-                )
+        let albums = model.searchResults.albums?.items ?? []
+        if albums.isEmpty {
+            searchEmptyState("No albums found", icon: "square.stack")
+        } else {
+            ForEach(albums) { album in
+                Button {
+                    model.openAlbum(album)
+                } label: {
+                    MediaRowView(
+                        title: album.name,
+                        subtitle: album.artistNames,
+                        imageURL: album.images?.first.flatMap { URL(string: $0.url) }
+                    )
+                }
+                .buttonStyle(.plain)
+                Divider().overlay(SpotliteTheme.divider)
             }
-            .buttonStyle(.plain)
-            Divider().overlay(SpotliteTheme.divider)
         }
     }
 
     @ViewBuilder
     private var artistResults: some View {
-        ForEach(model.searchResults.artists?.items ?? []) { artist in
-            NavigationLink(value: artist) {
-                MediaRowView(
-                    title: artist.name,
-                    subtitle: "Artist",
-                    imageURL: artist.images?.first.flatMap { URL(string: $0.url) }
-                )
+        let artists = model.searchResults.artists?.items ?? []
+        if artists.isEmpty {
+            searchEmptyState("No artists found", icon: "person.fill")
+        } else {
+            ForEach(artists) { artist in
+                Button {
+                    model.openArtist(artist)
+                } label: {
+                    MediaRowView(
+                        title: artist.name,
+                        subtitle: "Artist",
+                        imageURL: artist.images?.first.flatMap { URL(string: $0.url) },
+                        imageCornerRadius: 24
+                    )
+                }
+                .buttonStyle(.plain)
+                Divider().overlay(SpotliteTheme.divider)
             }
-            .buttonStyle(.plain)
-            Divider().overlay(SpotliteTheme.divider)
         }
     }
 
     @ViewBuilder
     private var playlistResults: some View {
-        ForEach(model.searchResults.playlists?.items ?? []) { playlist in
-            NavigationLink(value: playlist) {
-                MediaRowView(
-                    title: playlist.name,
-                    subtitle: playlist.description ?? "Playlist",
-                    imageURL: playlist.images?.first.flatMap { URL(string: $0.url) }
-                )
+        let playlists = model.searchResults.playlists?.items ?? []
+        if playlists.isEmpty {
+            searchEmptyState("No playlists found", icon: "music.note.list")
+        } else {
+            ForEach(playlists) { playlist in
+                Button {
+                    model.openPlaylistFromSearch(playlist)
+                } label: {
+                    MediaRowView(
+                        title: playlist.name,
+                        subtitle: playlistSubtitle(playlist),
+                        imageURL: playlist.images?.first.flatMap { URL(string: $0.url) }
+                    )
+                }
+                .buttonStyle(.plain)
+                Divider().overlay(SpotliteTheme.divider)
             }
-            .buttonStyle(.plain)
-            Divider().overlay(SpotliteTheme.divider)
         }
+    }
+
+    private func playlistSubtitle(_ playlist: SpotifyPlaylist) -> String {
+        if let description = playlist.description, !description.isEmpty {
+            return description
+        }
+        if playlist.trackCount > 0 {
+            return "\(playlist.trackCount) tracks"
+        }
+        return "Playlist"
+    }
+
+    @ViewBuilder
+    private func searchEmptyState(_ message: String, icon: String) -> some View {
+        ContentUnavailableView(
+            message,
+            systemImage: icon,
+            description: Text("Try a different search term.")
+        )
+        .frame(maxWidth: .infinity, minHeight: 200)
     }
 }

@@ -48,12 +48,12 @@ struct SpotliteApp: App {
             CommandMenu("Navigate") {
                 ForEach(Array(SidebarSection.allCases.enumerated()), id: \.offset) { index, section in
                     Button(section.rawValue) {
-                        model.selectedSection = section
+                        model.selectSection(section)
                     }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
                 Button("Focus Search") {
-                    model.selectedSection = .search
+                    model.selectSection(.search)
                 }
                 .keyboardShortcut("f", modifiers: .command)
             }

@@ -4,24 +4,51 @@ struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
     @State private var isScrubbing = false
     @State private var scrubPosition = 0.0
+    @State private var anchorPositionMs = 0
+    @State private var anchorDate = Date()
+
+    private var durationMs: Int {
+        max(model.playback.durationMs, 1)
+    }
+
+    private var shouldTickProgress: Bool {
+        model.playback.isPlaying && !isScrubbing
+    }
+
+    private func displayPositionMs(at date: Date) -> Double {
+        if isScrubbing { return scrubPosition }
+        guard model.playback.isPlaying else { return Double(model.playback.positionMs) }
+        let elapsedMs = date.timeIntervalSince(anchorDate) * 1000
+        return min(Double(anchorPositionMs) + elapsedMs, Double(durationMs))
+    }
+
+    private func syncPlaybackAnchor(to positionMs: Int? = nil) {
+        anchorPositionMs = positionMs ?? model.playback.positionMs
+        anchorDate = Date()
+    }
 
     var body: some View {
         VStack(spacing: 8) {
-            if model.playback.durationMs > 0 {
-                Slider(
-                    value: Binding(
-                        get: { isScrubbing ? scrubPosition : Double(model.playback.positionMs) },
-                        set: { scrubPosition = $0; isScrubbing = true }
-                    ),
-                    in: 0 ... Double(max(model.playback.durationMs, 1)),
-                    onEditingChanged: { editing in
-                        if !editing {
-                            isScrubbing = false
-                            Task { await model.playback.seek(to: Int(scrubPosition)) }
+            if durationMs > 0 {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !shouldTickProgress)) { timeline in
+                    let position = displayPositionMs(at: timeline.date)
+                    Slider(
+                        value: Binding(
+                            get: { position },
+                            set: { scrubPosition = $0; isScrubbing = true }
+                        ),
+                        in: 0 ... Double(durationMs),
+                        onEditingChanged: { editing in
+                            if !editing {
+                                isScrubbing = false
+                                let seekMs = Int(scrubPosition)
+                                syncPlaybackAnchor(to: seekMs)
+                                Task { await model.playback.seek(to: seekMs) }
+                            }
                         }
-                    }
-                )
-                .tint(SpotliteTheme.accent)
+                    )
+                    .tint(SpotliteTheme.accent)
+                }
             }
 
             HStack(spacing: 16) {
@@ -31,10 +58,18 @@ struct NowPlayingBar: View {
                     Text(model.playback.currentTrack?.name ?? "Not playing")
                         .font(.headline)
                         .lineLimit(1)
-                    Text(model.playback.currentTrack?.artistNames ?? "Select a track to start")
-                        .font(.caption)
-                        .foregroundStyle(SpotliteTheme.textSecondary)
-                        .lineLimit(1)
+                    if let track = model.playback.currentTrack {
+                        ArtistNamesView(
+                            artists: track.artists,
+                            fallback: track.artistNames,
+                            onOpenArtist: { model.openArtist($0) }
+                        )
+                    } else {
+                        Text("Select a track to start")
+                            .font(.caption)
+                            .foregroundStyle(SpotliteTheme.textSecondary)
+                            .lineLimit(1)
+                    }
                 }
                 .frame(minWidth: 180, alignment: .leading)
 
@@ -91,17 +126,32 @@ struct NowPlayingBar: View {
                     .tint(SpotliteTheme.accent)
                 }
 
-                Text("\(formatDuration(ms: model.playback.positionMs)) / \(formatDuration(ms: model.playback.durationMs))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(SpotliteTheme.textSecondary)
-                    .frame(width: 88, alignment: .trailing)
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !shouldTickProgress)) { timeline in
+                    Text("\(formatDuration(ms: Int(displayPositionMs(at: timeline.date)))) / \(formatDuration(ms: durationMs))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(SpotliteTheme.textSecondary)
+                        .frame(width: 88, alignment: .trailing)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(SpotliteTheme.elevated)
-        .onAppear {
-            Task { await model.playback.refreshPlaybackStateFromAPI() }
+        .onAppear { syncPlaybackAnchor() }
+        .onChange(of: model.playback.positionMs) { _, _ in
+            guard !isScrubbing else { return }
+            syncPlaybackAnchor()
+        }
+        .onChange(of: model.playback.isPlaying) { _, _ in
+            guard !isScrubbing else { return }
+            syncPlaybackAnchor()
+        }
+        .onChange(of: model.playback.currentTrack?.id) { _, _ in
+            guard !isScrubbing else { return }
+            syncPlaybackAnchor()
+        }
+        .task {
+            await model.playback.syncNowPlayingFromNetwork()
         }
     }
 }
@@ -170,7 +220,7 @@ struct SettingsView: View {
                     LabeledContent("Signed in as", value: name)
                 }
                 Button("Sign out", role: .destructive) {
-                    model.playback.stopTimers()
+                    model.playback.clearSession()
                     model.auth.logout()
                 }
             }

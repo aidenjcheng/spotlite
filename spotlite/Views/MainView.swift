@@ -50,7 +50,8 @@ struct MainView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        NavigationStack {
+        @Bindable var model = model
+        NavigationStack(path: $model.detailPath) {
             switch model.selectedSection {
             case .home:
                 HomeView()
@@ -83,7 +84,7 @@ struct SidebarView: View {
     var body: some View {
         List(selection: Binding(
             get: { model.selectedSection },
-            set: { model.selectedSection = $0 }
+            set: { model.selectSection($0) }
         )) {
             Section("Browse") {
                 ForEach(SidebarSection.allCases) { section in
@@ -95,28 +96,20 @@ struct SidebarView: View {
             if !model.playlists.isEmpty {
                 Section("Your Playlists") {
                     ForEach(model.playlists.prefix(12)) { playlist in
-                        NavigationLink(value: playlist) {
+                        Button {
+                            model.openPlaylist(playlist)
+                        } label: {
                             Text(playlist.name)
                                 .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Spotlite")
-        .navigationDestination(for: SpotifyPlaylist.self) { playlist in
-            PlaylistDetailView(playlist: playlist)
-                .id(playlist.id)
-        }
-        .navigationDestination(for: SpotifyAlbum.self) { album in
-            AlbumDetailView(album: album)
-                .id(album.id)
-        }
-        .navigationDestination(for: SpotifyArtist.self) { artist in
-            ArtistDetailView(artist: artist)
-                .id(artist.id)
-        }
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 SettingsLink {
@@ -125,7 +118,7 @@ struct SidebarView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Button {
-                    Task { await model.loadLibrary(); await model.loadHome() }
+                    Task { await model.loadLibrary(forceRefresh: true); await model.loadHome() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }

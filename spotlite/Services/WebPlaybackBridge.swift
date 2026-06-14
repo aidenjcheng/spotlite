@@ -33,10 +33,11 @@ final class WebPlaybackBridge: NSObject {
         let controller = WKUserContentController()
         config.userContentController = controller
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 240), configuration: config)
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.alphaValue = 0
         super.init()
         controller.add(self, name: "spotlite")
         webView.navigationDelegate = self
-        webView.isHidden = true
         loadHTML()
     }
 
@@ -87,7 +88,6 @@ final class WebPlaybackBridge: NSObject {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if let deviceID, isReady { return deviceID }
-            if let error = lastError { logger.error("Playback error while waiting: \(error)") }
             if let token = pendingToken {
                 await startPlayerIfPossible()
             }
@@ -95,6 +95,16 @@ final class WebPlaybackBridge: NSObject {
         }
         logger.error("Timed out waiting for playback device")
         return nil
+    }
+
+    func retryConnection() async {
+        playerStarted = false
+        deviceID = nil
+        isReady = false
+        await evaluate("disconnectPlayer()")
+        if let token = pendingToken {
+            await startPlayerIfPossible()
+        }
     }
 
     private func startPlayerIfPossible() async {
@@ -140,6 +150,16 @@ final class WebPlaybackBridge: NSObject {
     private static func isIgnorablePlaybackError(_ message: String) -> Bool {
         message.contains("no list was loaded")
     }
+
+    private func decodePlaybackState(from dict: [String: Any]) -> WebPlaybackState? {
+        guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+        return try? JSONDecoder().decode(WebPlaybackState.self, from: data)
+    }
+
+    private func publishStateRevision() {
+        stateRevision += 1
+        PerformanceSignposts.emitBridgeStatePublished()
+    }
 }
 
 extension WebPlaybackBridge: WKScriptMessageHandler {
@@ -164,22 +184,23 @@ extension WebPlaybackBridge: WKScriptMessageHandler {
             case "ready":
                 deviceID = body["deviceId"] as? String
                 isReady = deviceID != nil
-                stateRevision += 1
+                publishStateRevision()
                 clearError()
                 logger.info("Device ready: \(self.deviceID ?? "nil")")
             case "not_ready":
                 isReady = false
                 logger.warning("Device not ready")
             case "state":
+                let previous = playbackState
                 if let stateDict = body["state"] as? [String: Any] {
-                    let data = try? JSONSerialization.data(withJSONObject: stateDict)
-                    if let data {
-                        playbackState = try? JSONDecoder().decode(WebPlaybackState.self, from: data)
-                    }
+                    playbackState = WebPlaybackStateParser.parse(stateDict)
+                        ?? decodePlaybackState(from: stateDict)
                 } else {
                     playbackState = nil
                 }
-                stateRevision += 1
+                if playbackState?.shouldPublishRevision(comparedTo: previous) != false {
+                    publishStateRevision()
+                }
             case "error":
                 let message = body["message"] as? String ?? "unknown"
                 logger.error("JS error: \(message)")

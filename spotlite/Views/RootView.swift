@@ -11,7 +11,10 @@ struct RootView: View {
                 LoginView()
             }
             WebPlaybackHost()
-                .frame(width: 1, height: 1)
+                .frame(width: 320, height: 240)
+                .offset(x: -10_000, y: -10_000)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .spotliteScreenBackground()
     }
@@ -21,7 +24,10 @@ struct WebPlaybackHost: NSViewRepresentable {
     @Environment(AppModel.self) private var model
 
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        container.wantsLayer = true
+        container.layer?.opacity = 0
+        container.alphaValue = 0
         let webView = model.bridge.webView
         webView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(webView)

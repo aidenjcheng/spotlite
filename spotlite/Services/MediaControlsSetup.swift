@@ -59,8 +59,7 @@ enum MediaControlsSetup {
         ]
         if let url = track.artworkURL {
             Task {
-                if let (data, _) = try? await URLSession.shared.data(from: url),
-                   let image = NSImage(data: data) {
+                if let image = await ArtworkCache.shared.image(for: url) {
                     await MainActor.run {
                         info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
